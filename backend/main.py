@@ -1,130 +1,27 @@
 import os
-from dotenv import load_dotenv # <--- ADD THIS
+import shutil
+import uuid
+import time
+from typing import Dict, List
+from dotenv import load_dotenv
+
 load_dotenv()
-from fastapi import FastAPI
+
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_ollama import OllamaEmbeddings, ChatOllama
-
-# --- NEW: GROQ & HUGGINGFACE IMPORTS ---
 from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_core.documents import Document
 
-# app = FastAPI()
-
-# # --- ALLOW FRONTEND TO TALK TO BACKEND ---
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["http://localhost:3000"],
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-# # 1. Setup - The Brain & Database
-# embeddings = OllamaEmbeddings(model="llama3") 
-# llm = ChatOllama(model="llama3")
-
-# # Try to load existing DB if it exists (Persist data)
-# vectorstore = None
-# if os.path.exists("faiss_index"):
-#     try:
-#         # allow_dangerous_deserialization is needed for local files in newer LangChain versions
-#         vectorstore = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-#         print("Loaded existing FAISS index.")
-#     except Exception as e:
-#         print(f"Could not load index: {e}")
-
-# class ChatRequest(BaseModel):
-#     message: str
-
-# # 2. Ingest API - Reads your documents
-# @app.post("/ingest")
-# async def ingest_documents():
-#     global vectorstore
-    
-#     # Check if documents folder exists
-#     if not os.path.exists('./documents'):
-#         os.makedirs('./documents')
-#         return {"status": "Created 'documents' folder. Please add .txt files there."}
-
-#     loader = DirectoryLoader('./documents', glob="**/*.txt", loader_cls=TextLoader)
-#     docs = loader.load()
-    
-#     if not docs:
-#         return {"status": "No documents found in /documents folder."}
-
-#     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-#     splits = splitter.split_documents(docs)
-    
-#     # Create the DB from the docs (or update existing)
-#     if vectorstore is None:
-#         vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
-#     else:
-#         vectorstore.add_documents(splits)
-
-#     # Save to disk
-#     vectorstore.save_local("faiss_index")
-    
-#     return {"status": f"Ingested {len(splits)} chunks."}
-
-# # 3. Chat API - Answers questions
-# @app.post("/chat")
-# async def chat(request: ChatRequest):
-#     if vectorstore is None:
-#         return {"response": "I haven't read any documents yet. Please click 'Read Docs' first."}
-        
-#     retriever = vectorstore.as_retriever()
-#     docs = retriever.invoke(request.message)
-#     context = "\n\n".join([d.page_content for d in docs])
-    
-#     prompt = f"Answer based on this context: {context}\n\nQuestion: {request.message}"
-#     response = llm.invoke(prompt)
-#     return {"response": response.content}
-
-# # 4. Self-Healing API - The "Auditor"
-# @app.get("/maintenance")
-# async def run_maintenance():
-#     if vectorstore is None:
-#         return {"issues": ["No documents found. Please ingest data first."]}
-
-#     # Get all documents (FAISS specific trick to peek at data)
-#     # Note: FAISS doesn't easily let you list 'all' docs like Chroma, 
-#     # so we will use the docstore directly for this maintenance check.
-#     docstore = vectorstore.docstore._dict
-#     doc_ids = list(docstore.keys())
-    
-#     issues = []
-    
-#     if len(doc_ids) < 2:
-#         return {"issues": []} # Not enough docs to compare
-
-#     # Compare the first doc with the others
-#     doc_a = docstore[doc_ids[0]].page_content
-    
-#     for i in range(1, len(doc_ids)):
-#         doc_b = docstore[doc_ids[i]].page_content
-        
-#         # Ask AI if they contradict
-#         prompt = f"""
-#         Compare these two texts. Do they contradict each other?
-#         Text A: {doc_a}
-#         Text B: {doc_b}
-        
-#         Reply strictly in JSON format: {{"contradiction": true/false, "reason": "why", "fix": "suggestion"}}
-#         """
-#         response = llm.invoke(prompt)
-#         issues.append(response.content)
-        
-#     return {"issues": issues}
-
+from scenarios import SCENARIOS
 
 app = FastAPI()
 
-# --- CORS SETUP ---
+# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -133,120 +30,146 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 1. SETUP THE HYBRID BRAIN ---
-
-# A. Embeddings (Local CPU - "The Memory")
-# This downloads a small model (~100MB) automatically the first time you run it.
-print("Loading local embedding model... (this might take a minute the first time)")
+# --- 1. SETUP BRAIN ---
+print("Loading local embedding model...")
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-# B. LLM (Groq Cloud - "The Brain")
-# It looks for the GROQ_API_KEY environment variable automatically.
 llm = ChatGroq(
-    api_key=os.getenv("GROK_API_KEY"), # Good practice to be explicit
+    api_key=os.getenv("GROK_API_KEY"),
     model="llama-3.3-70b-versatile",
+    temperature=0
 )
 
-# --- DATABASE SETUP ---
-vectorstore = None
+# --- 2. SESSION MANAGEMENT ---
+# Store vectorstores in memory: { "session_id": FAISS_Object }
+user_sessions: Dict[str, FAISS] = {}
+SESSION_TIMEOUT = 3600  # 1 hour
 
-# Helper to load existing DB
-def load_db():
-    global vectorstore
-    if os.path.exists("faiss_index"):
+def get_session_id(request: Request):
+    return request.headers.get("X-Session-ID")
+
+def get_vectorstore(session_id: str):
+    if session_id in user_sessions:
+        return user_sessions[session_id]
+    
+    # Try loading from disk
+    folder_path = f"faiss_indexes/{session_id}"
+    if os.path.exists(folder_path):
         try:
-            vectorstore = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-            print("Loaded existing FAISS index.")
-        except Exception as e:
-            print(f"Could not load index: {e}")
+            vs = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
+            user_sessions[session_id] = vs
+            return vs
+        except:
+            return None
+    return None
 
-# Try loading on startup
-load_db()
 
 class ChatRequest(BaseModel):
     message: str
 
-# --- 2. INGEST API ---
-@app.post("/ingest")
-async def ingest_documents():
-    global vectorstore
-    
-    if not os.path.exists('./documents'):
-        os.makedirs('./documents')
-        return {"status": "Created 'documents' folder. Please add .txt files there."}
+class ScenarioRequest(BaseModel):
+    scenario_id: str
 
-    loader = DirectoryLoader('./documents', glob="**/*.txt", loader_cls=TextLoader)
-    docs = loader.load()
-    
-    if not docs:
-        return {"status": "No documents found in /documents folder."}
+# --- API ENDPOINTS ---
 
-    # Split text
+@app.post("/load-scenario")
+async def load_scenario(req: ScenarioRequest, request: Request):
+    session_id = get_session_id(request)
+    if not session_id: return {"error": "No Session ID"}
+    
+    data = SCENARIOS.get(req.scenario_id)
+    if not data: return {"error": "Scenario not found"}
+    
+    # Create fake documents from the dictionary
+    docs = [
+        Document(page_content=data["doc_a"], metadata={"source": "Old_Documentation.txt"}),
+        Document(page_content=data["doc_b"], metadata={"source": "New_Changelog.txt"})
+    ]
+    
+    # Split & Embed
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     splits = splitter.split_documents(docs)
     
-    # Create/Update DB
-    if vectorstore is None:
-        vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
-    else:
-        vectorstore.add_documents(splits)
-
-    vectorstore.save_local("faiss_index")
+    # Save isolated for this user
+    vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
     
-    return {"status": f"Ingested {len(splits)} chunks using Hybrid RAG (Groq + HF)."}
+    # Persist to disk
+    folder = f"faiss_indexes/{session_id}"
+    if not os.path.exists(folder): os.makedirs(folder)
+    vectorstore.save_local(folder)
+    
+    # Update memory
+    user_sessions[session_id] = vectorstore
+    
+    return {"status": f"Loaded scenario: {req.scenario_id}", "chunks": len(splits)}
 
-# --- 3. CHAT API ---
+@app.post("/ingest")
+async def ingest_documents(request: Request):
+    session_id = get_session_id(request)
+    if not session_id: return {"error": "Missing Session ID"}
+
+    # Standard ingest logic (assuming user put files in a folder named after their session)
+    # For simplicity in this demo, we assume ./documents is shared or uploaded via UI
+    # In a real app, you'd handle file uploads here.
+    
+    # For now, let's just return a placeholder if no file upload logic exists yet
+    return {"status": "For this demo, please use the 'Load Scenario' dropdown."}
+
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
+    session_id = get_session_id(request)
+    vectorstore = get_vectorstore(session_id)
+    
     if vectorstore is None:
-        return {"response": "I haven't read any documents yet. Please ingest first."}
+        return {"response": "Please load a scenario first."}
         
     retriever = vectorstore.as_retriever()
-    # Get relevant docs
-    docs = retriever.invoke(request.message)
+    docs = retriever.invoke(req.message)
     context = "\n\n".join([d.page_content for d in docs])
     
-    # Ask Groq
-    prompt = f"Answer based on this context:\n\n{context}\n\nQuestion: {request.message}"
+    prompt = f"Context: {context}\n\nQuestion: {req.message}"
     response = llm.invoke(prompt)
-    
     return {"response": response.content}
 
-# --- 4. MAINTENANCE API ---
 @app.get("/maintenance")
-async def run_maintenance():
+async def run_maintenance(request: Request):
+    session_id = get_session_id(request)
+    vectorstore = get_vectorstore(session_id)
+    
     if vectorstore is None:
-        return {"issues": ["No documents found."]}
+        return {"issues": []}
 
-    # Access raw docs from FAISS
     docstore = vectorstore.docstore._dict
     doc_ids = list(docstore.keys())
     
-    if len(doc_ids) < 2:
-        return {"issues": []}
+    if len(doc_ids) < 2: return {"issues": []}
 
-    issues = []
-    
-    # Compare first doc with up to 3 others (to save API calls)
+    # Grab the two loaded docs
     doc_a = docstore[doc_ids[0]].page_content
+    doc_b = docstore[doc_ids[1]].page_content # In scenario mode we strictly have 2 docs
     
-    for i in range(1, min(len(doc_ids), 4)):
-        doc_b = docstore[doc_ids[i]].page_content
-        
-        # Strict JSON prompt for the Agent
-        prompt = f"""
-        Compare these two texts. Do they contradict each other?
-        
-        Text A: {doc_a}
-        Text B: {doc_b}
-        
-        Reply ONLY in JSON format like this: 
-        {{"contradiction": true, "reason": "brief explanation", "fix": "suggestion", "text_a_snippet": "part of A", "text_b_snippet": "part of B"}}
-        
-        If no contradiction, reply: {{"contradiction": false}}
-        """
-        
-        response = llm.invoke(prompt)
-        issues.append(response.content)
-        
-    return {"issues": issues}
+    prompt = f"""
+    You are a Senior Technical Writer auditing software documentation.
+    
+    Compare "Text A" (Old Docs) against "Text B" (New Changelog).
+    
+    Task: Identify DEPRECATED features or CONFLICTING instructions.
+    
+    Text A: {doc_a}
+    Text B: {doc_b}
+    
+    Reply ONLY in JSON format: 
+    {{
+        "contradiction": true, 
+        "reason": "Explain the conflict clearly", 
+        "fix": "Write the exact new sentence that should be in the docs", 
+        "severity": "High",
+        "old_quote": "Exact quote from Text A that is now wrong",
+        "new_quote": "Exact quote from Text B that proves it changed"
+    }}
+    
+    If no contradiction, reply: {{"contradiction": false}}
+    """
+    
+    response = llm.invoke(prompt)
+    return {"issues": [response.content]}

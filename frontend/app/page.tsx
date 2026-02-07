@@ -1,16 +1,15 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  BookOpen,
   MessageSquare,
   Wrench,
   AlertTriangle,
   CheckCircle2,
   Send,
-  RefreshCw,
   Sparkles,
-  FileText, // Added icon for the new branding
+  FileText,
+  Database,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,366 +20,409 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { useToast } from '@/hooks/use-toast';
 import { Toaster } from '@/components/ui/toaster';
+import ReactMarkdown from 'react-markdown';
 
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
-interface ApiError {
-  message: string;
-  status?: number;
-}
+const SCENARIOS = [
+  { id: 'stripe', name: 'Stripe API (Charges vs PaymentIntent)' },
+  { id: 'react', name: 'React 18 (Event Delegation)' },
+  { id: 'nextjs', name: 'Next.js 14 (Pages vs App Router)' },
+  { id: 'aws_s3', name: 'AWS SDK v3 (Modular Imports)' },
+  { id: 'python', name: 'Python 2 vs 3 (Print Statement)' },
+  { id: 'openai', name: 'OpenAI Python SDK (v1.0 Migration)' },
+  { id: 'tailwind', name: 'Tailwind CSS v3 (Dark Mode)' },
+  { id: 'kubernetes', name: 'Kubernetes (Dockershim Removal)' },
+  { id: 'github_actions', name: 'GitHub Actions (Set-Output)' },
+  { id: 'flutter', name: 'Flutter (WillPopScope Deprecation)' },
+];
 
 export default function Home() {
+  const [sessionId, setSessionId] = useState('');
   const [query, setQuery] = useState('');
   const [answer, setAnswer] = useState('');
   const [issues, setIssues] = useState<string[]>([]);
-  const [isIngesting, setIsIngesting] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [isChatting, setIsChatting] = useState(false);
-  const [isRunningMaintenance, setIsRunningMaintenance] = useState(false);
-  const [docsIngested, setDocsIngested] = useState(false);
+  const [activeScenario, setActiveScenario] = useState('');
   const { toast } = useToast();
 
-  const handleApiError = (error: unknown, context: string): ApiError => {
-    if (error instanceof TypeError && error.message.includes('fetch')) {
-      return {
-        message: 'Unable to connect to the server. Please ensure the backend is running.',
-        status: 0,
-      };
+  // 1. Initialize Session ID on Load
+  useEffect(() => {
+    let sid = localStorage.getItem('rag_session_id');
+    if (!sid) {
+      sid = crypto.randomUUID();
+      localStorage.setItem('rag_session_id', sid);
     }
-    
-    if (error instanceof Error) {
-      return { message: error.message };
-    }
-    
-    return { message: 'An unexpected error occurred. Please try again.' };
-  };
+    setSessionId(sid);
+  }, []);
 
-  const handleIngest = async () => {
-    setIsIngesting(true);
+  // Helper for Headers
+  const getHeaders = () => ({
+    'Content-Type': 'application/json',
+    'X-Session-ID': sessionId,
+  });
+
+  const loadScenario = async (scenarioId: string) => {
+    setIsLoading(true);
+    setActiveScenario(scenarioId);
+    setAnswer('');
+    setIssues([]);
+
     try {
-      const res = await fetch(`${API_BASE_URL}/ingest`, { method: 'POST' });
-      
-      if (!res.ok) {
-        throw new Error(`Server returned ${res.status}: ${res.statusText}`);
-      }
-      
-      setDocsIngested(true);
+      const res = await fetch(`${API_BASE_URL}/load-scenario`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ scenario_id: scenarioId }),
+      });
+
+      if (!res.ok) throw new Error('Failed to load scenario');
+
       toast({
-        title: 'Documents Ingested Successfully',
-        description: 'Your knowledge base is now ready for queries.',
+        title: 'Scenario Loaded',
+        description: 'Knowledge base updated with conflicting documentation.',
       });
     } catch (error) {
-      const apiError = handleApiError(error, 'document ingestion');
       toast({
         variant: 'destructive',
-        title: 'Ingestion Failed',
-        description: apiError.message,
+        title: 'Error',
+        description: 'Could not load scenario.',
       });
     } finally {
-      setIsIngesting(false);
+      setIsLoading(false);
     }
   };
 
   const handleChat = async () => {
-    if (!query.trim()) {
-      toast({
-        variant: 'destructive',
-        title: 'Empty Query',
-        description: 'Please enter a question before submitting.',
-      });
-      return;
-    }
-
+    if (!query.trim()) return;
     setIsChatting(true);
     setAnswer('');
-    
+
     try {
       const res = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getHeaders(),
         body: JSON.stringify({ message: query }),
       });
-      
-      if (!res.ok) {
-        throw new Error(`Server returned ${res.status}: ${res.statusText}`);
-      }
-      
+
       const data = await res.json();
-      
-      if (!data.response) {
-        throw new Error('Invalid response format from server');
-      }
-      
       setAnswer(data.response);
     } catch (error) {
-      const apiError = handleApiError(error, 'chat');
-      toast({
-        variant: 'destructive',
-        title: 'Chat Request Failed',
-        description: apiError.message,
-      });
+      toast({ variant: 'destructive', title: 'Chat Failed' });
     } finally {
       setIsChatting(false);
     }
   };
 
-  const handleMaintenance = async () => {
-    setIsRunningMaintenance(true);
+  const runAudit = async () => {
+    setIsLoading(true);
     setIssues([]);
-    
+
     try {
-      const res = await fetch(`${API_BASE_URL}/maintenance`);
-      
-      if (!res.ok) {
-        throw new Error(`Server returned ${res.status}: ${res.statusText}`);
-      }
-      
+      const res = await fetch(`${API_BASE_URL}/maintenance`, {
+        headers: getHeaders(),
+      });
       const data = await res.json();
-      const foundIssues = data.issues || [];
-      setIssues(foundIssues);
-      
-      if (foundIssues.length === 0) {
+      setIssues(data.issues || []);
+
+      if (data.issues?.length > 0) {
         toast({
-          title: 'System Healthy',
-          description: 'No documentation conflicts detected.',
+          variant: 'destructive',
+          title: 'Conflicts Found',
+          description: 'Review the audit report below.',
         });
       } else {
         toast({
-          variant: 'destructive',
-          title: 'Conflicts Detected',
-          description: `Found ${foundIssues.length} inconsistencies between docs and changelogs.`,
+          title: 'All Clear',
+          description: 'No documentation conflicts detected.',
         });
       }
     } catch (error) {
-      const apiError = handleApiError(error, 'maintenance');
-      toast({
-        variant: 'destructive',
-        title: 'Audit Check Failed',
-        description: apiError.message,
-      });
+      toast({ variant: 'destructive', title: 'Audit Failed' });
     } finally {
-      setIsRunningMaintenance(false);
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !isChatting) {
-      handleChat();
+      setIsLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className='min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100'>
       <Toaster />
-      
-      {/* Header */}
-      <header className="border-b bg-card">
-        <div className="mx-auto max-w-4xl px-6 py-6">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <FileText className="size-5" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-balance">
-                SaaS Documentation Auditor
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                Automated detection of deprecated features and documentation conflicts
-              </p>
-            </div>
+
+      {/* Navbar */}
+      <header className='bg-white border-b sticky top-0 z-10'>
+        <div className='max-w-5xl mx-auto px-6 h-16 flex items-center justify-between'>
+          <div className='flex items-center gap-2 text-indigo-600'>
+            <Database className='w-6 h-6' />
+            <h1 className='font-bold text-xl tracking-tight'>
+              DocuGuard{' '}
+              <span className='text-slate-400 font-normal text-sm ml-2 hidden sm:inline-block'>
+                SaaS Auditor
+              </span>
+            </h1>
+          </div>
+          <div className='text-xs text-slate-400 font-mono'>
+            Session: {sessionId.slice(0, 8)}...
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl space-y-6 px-6 py-8">
-        {/* Quick Actions */}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <BookOpen className="size-4 text-primary" />
-                Knowledge Base
+      <main className='max-w-5xl mx-auto px-6 py-10 space-y-8'>
+        {/* Hero Section */}
+        <div className='grid md:grid-cols-3 gap-6'>
+          {/* 1. Control Panel */}
+          <Card className='md:col-span-1 shadow-sm border-slate-200 h-fit'>
+            <CardHeader className='bg-slate-50/50 pb-4'>
+              <CardTitle className='text-sm font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-2'>
+                <Wrench className='w-4 h-4' /> Simulation Control
               </CardTitle>
-              <CardDescription>
-                Ingest latest Docs and Changelogs
-              </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className='space-y-4 pt-6'>
+              <div className='space-y-2'>
+                <label className='text-xs font-medium text-slate-700'>
+                  Select Tech Scenario
+                </label>
+                <Select onValueChange={loadScenario} disabled={isLoading}>
+                  <SelectTrigger>
+                    <SelectValue placeholder='Load Demo Data...' />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SCENARIOS.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {s.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <Button
-                onClick={handleIngest}
-                disabled={isIngesting}
-                className="w-full"
-                variant={docsIngested ? 'secondary' : 'default'}
+                onClick={runAudit}
+                className='w-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200 shadow-lg transition-all'
+                disabled={!activeScenario || isLoading}
               >
-                {isIngesting ? (
-                  <>
-                    <Spinner className="mr-2" />
-                    Ingesting...
-                  </>
-                ) : docsIngested ? (
-                  <>
-                    <CheckCircle2 className="mr-2 size-4" />
-                    Re-Sync Documents
-                  </>
+                {isLoading ? (
+                  <Spinner className='mr-2 text-white' />
                 ) : (
-                  <>
-                    <RefreshCw className="mr-2 size-4" />
-                    Sync Documents
-                  </>
+                  <Sparkles className='mr-2 w-4 h-4' />
                 )}
+                Run Audit Agent
               </Button>
+
+              <div className='text-xs text-slate-400 text-center px-4 leading-relaxed'>
+                Step 1: Load a scenario.
+                <br />
+                Step 2: Run the agent to detect conflicts.
+              </div>
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Wrench className="size-4 text-primary" />
-                Audit Agent
-              </CardTitle>
-              <CardDescription>
-                Scan for discrepancies between versions
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button
-                onClick={handleMaintenance}
-                disabled={isRunningMaintenance}
-                variant="outline"
-                className="w-full bg-transparent"
-              >
-                {isRunningMaintenance ? (
-                  <>
-                    <Spinner className="mr-2" />
-                    Auditing Documents...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="mr-2 size-4" />
-                    Run Audit Agent
-                  </>
-                )}
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* --- AUDIT FINDINGS SECTION (UPDATED) --- */}
-        {issues.length > 0 && (
-            <div className="space-y-4">
-               <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                 <AlertTriangle className="text-red-600" /> 
-                 Audit Findings
-               </h2>
-               
-               {issues.map((issueStr, i) => {
+          {/* 2. Audit Report Area */}
+          <div className='md:col-span-2 space-y-6'>
+            {/* AUDIT CARDS */}
+            {issues.length > 0 ? (
+              <div className='animate-in fade-in slide-in-from-bottom-4 duration-500'>
+                {issues.map((issueStr, i) => {
                   let data;
                   try {
-                    // Clean the JSON string (Grok sometimes adds text before/after)
-                    const cleanJson = issueStr.substring(issueStr.indexOf('{'), issueStr.lastIndexOf('}') + 1);
+                    const cleanJson = issueStr.substring(
+                      issueStr.indexOf('{'),
+                      issueStr.lastIndexOf('}') + 1,
+                    );
                     data = JSON.parse(cleanJson);
-                  } catch (e) { 
-                    // Fallback for raw text errors
-                    return (
-                        <Alert key={i} variant="destructive">
-                            <AlertTitle>Raw Error Log</AlertTitle>
-                            <AlertDescription>{issueStr}</AlertDescription>
-                        </Alert>
-                    ); 
+                  } catch (e) {
+                    return null;
                   }
 
                   if (!data.contradiction) return null;
 
                   return (
-                    <div key={i} className="bg-white border-l-4 border-red-500 shadow-sm rounded-r-lg p-6 animate-in fade-in slide-in-from-bottom-4">
-                      <div className="flex justify-between items-start">
-                        <div>
-                            <h3 className="text-lg font-bold text-gray-900">⚠️ Outdated Documentation Detected</h3>
-                            <p className="text-sm text-gray-500 mt-1">Audit detected a discrepancy between Docs and Changelog.</p>
+                    <Card
+                      key={i}
+                      className='border-l-4 border-l-red-500 shadow-md overflow-hidden'
+                    >
+                      <div className='bg-red-50 px-6 py-4 flex justify-between items-center border-b border-red-100'>
+                        <div className='flex items-center gap-2 text-red-700 font-bold'>
+                          <AlertTriangle className='w-5 h-5' />
+                          <span>Conflict Detected</span>
                         </div>
-                        <span className="bg-red-100 text-red-800 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide">
-                            {data.severity || "Critical"} Severity
+                        <span className='bg-white text-red-600 text-xs font-bold px-3 py-1 rounded-full border border-red-200 shadow-sm uppercase'>
+                          {data.severity || 'Critical'}
                         </span>
                       </div>
 
-                      <div className="mt-4 bg-gray-50 p-4 rounded-md border border-gray-100">
-                        <p className="font-semibold text-gray-700 text-sm mb-1">Analysis:</p>
-                        <p className="text-gray-600 text-sm leading-relaxed">{data.reason}</p>
-                      </div>
+                      <div className='p-6 space-y-6'>
+                        <div className='space-y-2'>
+                          <h3 className='font-semibold text-slate-900'>
+                            Analysis
+                          </h3>
+                          <p className='text-slate-600 leading-relaxed text-sm'>
+                            {data.reason}
+                          </p>
+                        </div>
 
-                      <div className="mt-4">
-                        <p className="font-semibold text-green-700 text-sm mb-2 flex items-center gap-2">
-                            <CheckCircle2 className="size-4" /> Suggested Fix:
-                        </p>
-                        <div className="bg-green-50 p-3 rounded-md border border-green-200 text-green-800 font-mono text-xs shadow-inner">
+                        {/* DIFF VIEW STRATEGY 4 */}
+                        <div className='grid grid-cols-2 gap-4 text-sm bg-slate-50 rounded-lg p-4 border border-slate-200'>
+                          <div>
+                            <span className='block text-xs font-bold text-slate-400 uppercase mb-1'>
+                              Old Documentation
+                            </span>
+                            <p className='text-slate-500 line-through decoration-red-400/50 bg-white p-2 rounded border border-slate-100 min-h-[60px]'>
+                              "{data.old_quote || '...'}"
+                            </p>
+                          </div>
+                          <div>
+                            <span className='block text-xs font-bold text-slate-400 uppercase mb-1'>
+                              New Changelog
+                            </span>
+                            <p className='text-slate-800 bg-white p-2 rounded border border-slate-100 min-h-[60px] font-medium'>
+                              "{data.new_quote || '...'}"
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className='bg-green-50 border border-green-200 rounded-lg p-4'>
+                          <div className='flex items-center gap-2 text-green-800 font-semibold mb-2'>
+                            <CheckCircle2 className='w-4 h-4' /> Suggested
+                            Remediation
+                          </div>
+                          <code className='block bg-white text-green-700 px-3 py-2 rounded border border-green-100 text-xs font-mono'>
                             {data.fix}
+                          </code>
                         </div>
                       </div>
-                    </div>
+                    </Card>
                   );
                 })}
-            </div>
-        )}
+              </div>
+            ) : (
+              // Empty State
+              <div className='h-full min-h-[300px] border-2 border-dashed border-slate-200 rounded-xl flex flex-col items-center justify-center text-slate-400 p-8 text-center bg-slate-50/50'>
+                <FileText className='w-12 h-12 mb-3 opacity-20' />
+                <h3 className='font-semibold text-slate-600'>
+                  Waiting for Analysis
+                </h3>
+                <p className='text-sm max-w-xs mx-auto mt-1'>
+                  Select a scenario from the left panel and click "Run Audit
+                  Agent" to see the magic happen.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
 
-        {/* Chat Interface */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <MessageSquare className="size-5 text-primary" />
-              Ask a Question
+        {/* 3. Interactive Chat */}
+        <Card className='shadow-sm border-slate-200'>
+          <CardHeader className='border-b bg-slate-50/50'>
+            <CardTitle className='text-base flex items-center gap-2'>
+              <MessageSquare className='w-4 h-4 text-indigo-500' />
+              Verify with AI
             </CardTitle>
-            <CardDescription>
-              Query your knowledge base regarding API specs and updates
-            </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-2">
+          <CardContent className='p-0'>
+            <div className='p-6 bg-slate-50 min-h-[100px] max-h-[400px] overflow-y-auto'>
+              {answer ? (
+                <div className='flex gap-4'>
+                  <div className='w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center shrink-0'>
+                    <Sparkles className='w-4 h-4 text-indigo-600' />
+                  </div>
+
+                  {/* Replaced raw <p> tag with ReactMarkdown */}
+                  <div className='text-slate-700 text-sm leading-relaxed mt-1 w-full prose prose-sm max-w-none'>
+                    <ReactMarkdown
+                      components={{
+                        // Bold text: Make it Indigo and semi-bold
+                        strong: ({ node, ...props }) => (
+                          <span
+                            className='font-semibold text-indigo-700'
+                            {...props}
+                          />
+                        ),
+                        // Lists: Add bullets and spacing
+                        ul: ({ node, ...props }) => (
+                          <ul
+                            className='list-disc pl-4 space-y-1 my-2'
+                            {...props}
+                          />
+                        ),
+                        ol: ({ node, ...props }) => (
+                          <ol
+                            className='list-decimal pl-4 space-y-1 my-2'
+                            {...props}
+                          />
+                        ),
+                        // Paragraphs: Add spacing between blocks
+                        p: ({ node, ...props }) => (
+                          <p className='mb-3 last:mb-0' {...props} />
+                        ),
+                        // Code Blocks: Dark mode style
+                        code: ({
+                          node,
+                          inline,
+                          className,
+                          children,
+                          ...props
+                        }: any) => {
+                          return inline ? (
+                            // Inline code (like `variable`)
+                            <code
+                              className='bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded font-mono text-xs font-medium'
+                              {...props}
+                            >
+                              {children}
+                            </code>
+                          ) : (
+                            // Block code (like the JSON example)
+                            <div className='my-3 overflow-hidden rounded-lg bg-slate-900 shadow-sm'>
+                              <div className='flex items-center gap-1.5 bg-slate-800/50 px-4 py-2'>
+                                <div className='h-2.5 w-2.5 rounded-full bg-red-500/20' />
+                                <div className='h-2.5 w-2.5 rounded-full bg-yellow-500/20' />
+                                <div className='h-2.5 w-2.5 rounded-full bg-green-500/20' />
+                              </div>
+                              <pre className='p-4 overflow-x-auto text-slate-50 font-mono text-xs'>
+                                <code {...props}>{children}</code>
+                              </pre>
+                            </div>
+                          );
+                        },
+                      }}
+                    >
+                      {answer}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              ) : (
+                <p className='text-slate-400 text-sm italic text-center mt-4'>
+                  Ask a question to verify the conflict...
+                </p>
+              )}
+            </div>
+            <div className='p-4 border-t bg-white flex gap-2'>
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="E.g., How do I authenticate in v2.0?"
-                disabled={isChatting}
-                className="flex-1"
+                placeholder="e.g. 'How do I create a charge in the new version?'"
+                className='border-slate-200 focus-visible:ring-indigo-500'
               />
               <Button
                 onClick={handleChat}
-                disabled={isChatting || !query.trim()}
+                disabled={isChatting}
+                className='bg-slate-900 text-white'
               >
-                {isChatting ? (
-                  <Spinner />
-                ) : (
-                  <Send className="size-4" />
-                )}
-                <span className="sr-only">Send message</span>
+                {isChatting ? <Spinner /> : <Send className='w-4 h-4' />}
               </Button>
             </div>
-
-            {/* Answer Display */}
-            {(answer || isChatting) && (
-              <div className="rounded-lg border bg-muted/50 p-4">
-                {isChatting ? (
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Spinner />
-                    <span>Analyzing documents...</span>
-                  </div>
-                ) : (
-                  <div className="prose prose-sm max-w-none text-foreground">
-                    <p className="whitespace-pre-wrap leading-relaxed">{answer}</p>
-                  </div>
-                )}
-              </div>
-            )}
           </CardContent>
         </Card>
-
-        {/* Footer Hint */}
-        <p className="text-center text-xs text-muted-foreground">
-          Tip: Ingest documents first. The Audit Agent automatically cross-references Changelogs against Documentation.
-        </p>
       </main>
     </div>
   );
