@@ -1,0 +1,5 @@
+Release Notes v2.0 (January 2025)
+---------------------------------
+- BREAKING CHANGE: The /api/login endpoint has been updated.
+- You must now use 'email' instead of 'username'.
+- Security Update: Tokens now expire after 24 hours. The 'never expires' behavior is deprecated.

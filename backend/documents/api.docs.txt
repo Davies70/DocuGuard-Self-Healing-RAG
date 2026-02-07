@@ -1,0 +1,8 @@
+API Documentation v1.0
+----------------------
+To authenticate users, send a POST request to /api/login.
+Parameters required:
+- 'username': The user's handle.
+- 'password': The user's secret code.
+
+The response will contain a 'token' which never expires.
