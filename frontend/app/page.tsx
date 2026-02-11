@@ -9,7 +9,6 @@ import {
   Send,
   Sparkles,
   FileText,
-  Database,
   Copy,
   Check,
   Trash2,
@@ -18,7 +17,6 @@ import {
   XCircle,
   RefreshCw,
   Shield,
-  ChevronDown,
   Info,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -394,7 +392,7 @@ export default function Home() {
                     </label>
                     <Button
                       onClick={runAudit}
-                      className='w-full bg-indigo-600 hover:bg-indigo-700 text-white transition-all'
+                      className='w-full bg-indigo-600 hover:bg-indigo-700 text-white transition-all cursor-pointer'
                       disabled={!activeScenario || isAnythingLoading}
                     >
                       {isAuditing ? (
@@ -788,7 +786,7 @@ export default function Home() {
                       <Button
                         onClick={handleChat}
                         disabled={isChatting || !query.trim()}
-                        className='bg-slate-900 hover:bg-slate-800 text-white shadow-sm px-3'
+                        className='bg-slate-900 hover:bg-slate-800 text-white shadow-sm px-3 cursor-pointer'
                         aria-label='Send message'
                       >
                         {isChatting ? (
