@@ -360,12 +360,12 @@ export default function Home() {
                       onValueChange={loadScenario}
                       disabled={isAnythingLoading}
                     >
-                      <SelectTrigger className='w-full bg-white border-slate-200'>
+                      <SelectTrigger className='w-full bg-white border-slate-200 cursor-pointer'>
                         <SelectValue placeholder='Select a scenario...' />
                       </SelectTrigger>
                       <SelectContent>
                         {SCENARIOS.map((s) => (
-                          <SelectItem key={s.id} value={s.id}>
+                          <SelectItem key={s.id} value={s.id} className='cursor-pointer'>
                             <span className='font-medium'>{s.name}</span>
                             <span className='text-muted-foreground ml-1'>
                               ({s.detail})
